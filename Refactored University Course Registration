@@ -1,0 +1,185 @@
+class Person:
+    def __init__(self, person_id: str, name: str, email: str, phone: Optional[str] = None):
+        self.person_id = person_id
+        self.name = name
+        self.email = email
+        self.phone = phone
+        self.role = None
+
+    def update_contact(self, email: str, phone: Optional[str]):
+        self.email = email
+        self.phone = phone
+
+class Student(Person):
+    def __init__(self, student_id: str, name: str, email: str, phone: Optional[str] = None):
+        super().__init__(student_id, name, email, phone)
+        self.role = "Student"
+        self._course_codes: List[str] = []   # keep lightweight references by code
+        self.grades: Dict[str, str] = {}
+        self.attendance: Dict[str, List[bool]] = {}
+        self.last_login = datetime.now()
+
+    # minimal domain mutation API
+    def add_course_code(self, code: str):
+        if code not in self._course_codes:
+            self._course_codes.append(code)
+
+    def course_codes(self) -> List[str]:
+        return list(self._course_codes)
+
+class Course:
+    def __init__(self, code: str, title: str, credit_hours: int):
+        self.code = code
+        self.title = title
+        self.credit_hours = credit_hours
+        self.lecturer_id: Optional[str] = None
+        self._student_ids: List[str] = []
+
+    def enroll_student_id(self, student_id: str):
+        if student_id not in self._student_ids:
+            self._student_ids.append(student_id)
+
+    def student_ids(self) -> List[str]:
+        return list(self._student_ids)
+
+class Lecturer(Person):
+    def __init__(self, staff_id: str, name: str, email: str, department: str):
+        super().__init__(staff_id, name, email)
+        self.role = "Lecturer"
+        self.department = department
+        self._course_codes: List[str] = []
+
+    def assign_course_code(self, code: str):
+        if code not in self._course_codes:
+            self._course_codes.append(code)
+
+    def course_codes(self) -> List[str]:
+        return list(self._course_codes)
+
+# Repositories (in-memory, single responsibility)
+class StudentRepository:
+    def __init__(self):
+        self._students: Dict[str, Student] = {}
+
+    def add(self, s: Student):
+        self._students[s.person_id] = s
+
+    def get(self, sid: str) -> Optional[Student]:
+        return self._students.get(sid)
+
+    def all(self) -> List[Student]:
+        return list(self._students.values())
+
+class CourseRepository:
+    def __init__(self):
+        self._courses: Dict[str, Course] = {}
+
+    def add(self, c: Course):
+        self._courses[c.code] = c
+
+    def get(self, code: str) -> Optional[Course]:
+        return self._courses.get(code)
+
+    def all(self) -> List[Course]:
+        return list(self._courses.values())
+
+# Services separated by concern
+class EnrollmentService:
+    def __init__(self, s_repo: StudentRepository, c_repo: CourseRepository):
+        self.s_repo = s_repo
+        self.c_repo = c_repo
+
+    def enroll(self, student_id: str, course_code: str) -> bool:
+        student = self.s_repo.get(student_id)
+        course = self.c_repo.get(course_code)
+        if not student or not course:
+            return False
+        # update both objects' lightweight state by IDs only
+        course.enroll_student_id(student_id)
+        student.add_course_code(course_code)
+        return True
+
+class GPAService:
+    # Single responsibility — compute GPA only
+    _GRADE_POINTS = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0}
+
+    @classmethod
+    def calculate_gpa(cls, student: Student) -> float:
+        if not student.grades:
+            return 0.0
+        total = 0
+        count = 0
+        for grade in student.grades.values():
+            if grade in cls._GRADE_POINTS:
+                total += cls._GRADE_POINTS[grade]
+                count += 1
+        return round(total / count, 2) if count > 0 else 0.0
+
+class AttendanceService:
+    @staticmethod
+    def calculate_attendance_percent(student: Student) -> float:
+        if not student.attendance:
+            return 0.0
+        total_pct = 0.0
+        courses = 0
+        for records in student.attendance.values():
+            if not records:
+                continue
+            attended = sum(1 for r in records if r)
+            pct = (attended / len(records)) * 100
+            total_pct += pct
+            courses += 1
+        return round(total_pct / courses, 1) if courses > 0 else 0.0
+
+class ReportService:
+    def __init__(self, s_repo: StudentRepository, c_repo: CourseRepository):
+        self.s_repo = s_repo
+        self.c_repo = c_repo
+
+    def full_report(self) -> str:
+        # Build string report (presentation separated from domain)
+        out = []
+        out.append("=== Full University Report ===")
+        out.append("Courses:")
+        for c in self.c_repo.all():
+            out.append(f"{c.code}: {c.title} (Credits: {c.credit_hours}) Students: {len(c.student_ids())}")
+        out.append("Students:")
+        for s in self.s_repo.all():
+            gpa = GPAService.calculate_gpa(s)
+            att = AttendanceService.calculate_attendance_percent(s)
+            out.append(f"{s.person_id} {s.name} - GPA: {gpa}, Attendance: {att}%")
+        return "\n".join(out)
+
+# Example usage (same behavior but decoupled)
+def main_refactored():
+    s_repo = StudentRepository()
+    c_repo = CourseRepository()
+    enroll = EnrollmentService(s_repo, c_repo)
+    report = ReportService(s_repo, c_repo)
+
+    # create data
+    s1 = Student("S001", "Alice", "alice@uni.com")
+    s2 = Student("S002", "Bob", "bob@uni.com")
+    s_repo.add(s1); s_repo.add(s2)
+
+    c1 = Course("CS101", "Intro to Programming", 3)
+    c2 = Course("CS201", "Data Structures", 4)
+    c_repo.add(c1); c_repo.add(c2)
+
+    # enroll via service (no direct object-to-object calls)
+    enroll.enroll("S001", "CS101")
+    enroll.enroll("S002", "CS101")
+
+    # lecturer assigns grades without altering student internals directly (still simple here):
+    s1.grades["CS101"] = "A"
+    s2.grades["CS101"] = "B"
+
+    # attendance
+    s1.attendance["CS101"] = [True, True, False, True]
+    s2.attendance["CS101"] = [True, False, True, False]
+
+    # show report
+    print(report.full_report())
+
+if __name__ == "__main__":
+    main_refactored()
